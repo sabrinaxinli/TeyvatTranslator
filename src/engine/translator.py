@@ -68,13 +68,26 @@ def _init_marian_sync():
         # Move to GPU if available
         try:
             import torch
-            if torch.cuda.is_available():
+            # #region agent log
+            logger.info(
+                "marian_device_probe torch_version=%s torch_cuda_build=%s "
+                "cuda_available=%s device_count=%s",
+                torch.__version__,
+                torch.version.cuda,
+                torch.cuda.is_available(),
+                torch.cuda.device_count(),
+            )
+            # #endregion
+            if torch.cuda.is_available() and os.environ.get("TEYVAT_DEVICE", "").strip().lower() != "cpu":
                 _model = _model.cuda()
-                logger.info("MarianMT using GPU acceleration")
+                logger.info(
+                    "MarianMT using GPU acceleration device=%s",
+                    torch.cuda.get_device_name(0),
+                )
             else:
                 logger.info("MarianMT using CPU")
         except Exception:
-            pass
+            logger.exception("marian_device_setup_failed")
         
         # Warmup pass - do directly to avoid threading issues
         logger.info("Warming up MarianMT...")
@@ -139,8 +152,16 @@ def _get_marian():
     return _model, _tokenizer
 
 
-def _translate_marian(text: str) -> Optional[str]:
+def _translate_marian(text: str, submitted_at: Optional[float] = None) -> Optional[str]:
     """Translate using MarianMT (local model)."""
+    # #region agent log
+    if submitted_at is not None:
+        logger.info(
+            "marian_queue_wait wait_ms=%.1f input_chars=%s",
+            (time.perf_counter() - submitted_at) * 1000,
+            len(text),
+        )
+    # #endregion
     model, tokenizer = _get_marian()
     
     if model is None or tokenizer is None:
@@ -310,7 +331,9 @@ class Translator:
         if MARIAN_AVAILABLE and _marian_ready:
             from concurrent.futures import TimeoutError
             try:
-                future = _marian_executor.submit(_translate_marian, offline_text)
+                future = _marian_executor.submit(
+                    _translate_marian, offline_text, time.perf_counter()
+                )
                 result = future.result(timeout=1.5)
                 if is_valid_english_translation(text, result):
                     logger.debug(f"MarianMT: {text[:20]}... → {result[:30]}...")

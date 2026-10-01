@@ -249,6 +249,36 @@ _ocr_init_threads: Dict[str, Thread] = {}
 _ocr_ready: Dict[str, bool] = {}
 _ocr_init_errors: Dict[str, str] = {}
 
+def _select_paddle_device(paddle_module) -> str:
+    """Pick 'gpu:0' when this Paddle build and machine support CUDA, else 'cpu'.
+
+    Set TEYVAT_DEVICE=cpu to force CPU. Always logs what was detected so a CPU
+    fallback can be diagnosed from the session log.
+    """
+    compiled_cuda = False
+    gpu_count = 0
+    try:
+        compiled_cuda = bool(paddle_module.device.is_compiled_with_cuda())
+        if compiled_cuda:
+            gpu_count = int(paddle_module.device.cuda.device_count())
+    except Exception as detect_err:
+        logger.warning("paddle_device_detection_failed error=%r", detect_err)
+    forced = os.environ.get("TEYVAT_DEVICE", "").strip().lower()
+    device = "gpu:0" if (compiled_cuda and gpu_count > 0 and forced != "cpu") else "cpu"
+    # #region agent log
+    logger.info(
+        "paddle_device_selection paddle_version=%s compiled_with_cuda=%s "
+        "gpu_count=%s forced=%r selected=%s",
+        getattr(paddle_module, "__version__", "unknown"),
+        compiled_cuda,
+        gpu_count,
+        forced,
+        device,
+    )
+    # #endregion
+    return device
+
+
 def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
     """Initialize PaddleOCR synchronously (called in background thread)."""
     paddle_lang = get_paddle_lang(source_lang)
@@ -266,12 +296,14 @@ def _init_paddle_ocr_sync(source_lang: str = "chi_sim"):
     try:
         init_started = time.perf_counter()
         import paddle
-        paddle.device.set_device('cpu')
+        ocr_device = _select_paddle_device(paddle)
+        paddle.device.set_device(ocr_device)
         logger.info(
             "ocr_initialization_started requested_source=%s shared_profile=%s "
-            "device=cpu frozen=%s",
+            "device=%s frozen=%s",
             source_lang,
             paddle_lang,
+            ocr_device,
             bool(getattr(_sys, "frozen", False)),
         )
         
